@@ -1881,7 +1881,7 @@ EOF
   log::info "[kubeadm init]" "${MGMT_NODE}: set kube config."
   command::exec "${MGMT_NODE}" "
      mkdir -p \$HOME/.kube
-     sudo cp -f /etc/kubernetes/admin.conf \$HOME/.kube/config
+     cp -f /etc/kubernetes/admin.conf \$HOME/.kube/config
   "
   check::exit_code "$?" "kubeadm init" "${MGMT_NODE}: set kube config" "exit"
   if [[ "$(echo "$MASTER_NODES" | wc -w)" == "1" ]]; then
@@ -1950,7 +1950,7 @@ EOF
     log::info "[kubeadm join]" "$host: set kube config."
     command::exec "${host}" "
       mkdir -p \$HOME/.kube
-      sudo cp -f /etc/kubernetes/admin.conf \$HOME/.kube/config
+      cp -f /etc/kubernetes/admin.conf \$HOME/.kube/config
     "
     check::exit_code "$?" "kubeadm join" "$host: set kube config" "exit"
     
