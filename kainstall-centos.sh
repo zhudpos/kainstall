@@ -84,6 +84,9 @@ GCR_PROXY="${GCR_PROXY:-k8sgcr.lework.workers.dev}"
 SKIP_UPGRADE_PLAN=${SKIP_UPGRADE_PLAN:-false}
 SKIP_SET_OS_REPO=${SKIP_SET_OS_REPO:-false}
 
+# I decided the version based on this link(https://github.com/kubernetes/kops/issues/15204), because I couldn't find which version started to change
+FLANNEL_NAMESPACE_CHANGED_VERSION="${FLANNEL_NAMESPACE_CHANGED_VERSION:-1.25.7}"
+
 trap trap::info 1 2 3 15 EXIT
 
 ######################################################################################################
@@ -874,7 +877,7 @@ function script::upgrade_kernel() {
 
   grub2-set-default 0 && grub2-mkconfig -o /etc/grub2.cfg
   grubby --default-kernel
-  grubby --args="user_namespace.enable=1" --update-kernel="$(grubby --default-kernel)"
+  grubby --args="cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory user_namespace.enable=1" --update-kernel="$(grubby --default-kernel)"
 }
 
 
@@ -1014,6 +1017,7 @@ EOF
 
   containerd config default > /etc/containerd/config.toml
   sed -i -e "s#k8s.gcr.io#registry.cn-hangzhou.aliyuncs.com/kainstall#g" \
+         -e "s#registry.k8s.io#registry.cn-hangzhou.aliyuncs.com/kainstall#g" \
          -e "s#https://registry-1.docker.io#https://yssx4sxy.mirror.aliyuncs.com#g" \
          -e "s#SystemdCgroup = false#SystemdCgroup = true#g" \
          -e "s#oom_score = 0#oom_score = -999#" \
@@ -1845,7 +1849,7 @@ controllerManager:
     node-monitor-grace-period: '20s'
     pod-eviction-timeout: '2m'
     terminated-pod-gc-threshold: '30'
-    experimental-cluster-signing-duration: 87600h
+    cluster-signing-duration: 87600h
     feature-gates: RotateKubeletServerCertificate=true
   extraVolumes:
   - hostPath: /usr/share/zoneinfo/Asia/Shanghai
@@ -1886,7 +1890,7 @@ EOF
   check::exit_code "$?" "kubeadm init" "${MGMT_NODE}: set kube config" "exit"
   if [[ "$(echo "$MASTER_NODES" | wc -w)" == "1" ]]; then
     log::info "[kubeadm init]" "${MGMT_NODE}: delete master taint"
-    command::exec "${MGMT_NODE}" "kubectl taint nodes --all node-role.kubernetes.io/master- node-role.kubernetes.io/control-plane- | echo"
+    command::exec "${MGMT_NODE}" "kubectl taint nodes --all node-role.kubernetes.io/master- || kubectl taint nodes --all node-role.kubernetes.io/control-plane-"
     check::exit_code "$?" "kubeadm init" "${MGMT_NODE}: delete master taint"
   fi
 
@@ -2453,6 +2457,12 @@ spec:
   fi
 }
 
+#compare version numbers
+function is::larger_version_than() {
+  local version1=$1;
+  local version2=$2;  
+  return "$(echo "$version1" "$version2" | awk '{if ($1 >= $2) print 1; else print 0}')"
+}
 
 function add::network() {
   # 添加network组件
@@ -2473,7 +2483,12 @@ function add::network() {
     "
     check::exit_code "$?" "flannel" "change flannel pod subnet"
     kube::apply "${flannel_file}"
-    kube::wait "flannel" "kube-system" "pods" "app=flannel"
+    is::larger_version_than "${KUBE_VERSION}" "${FLANNEL_NAMESPACE_CHANGED_VERSION}"
+    if [ $? -eq 1 ];then
+      kube::wait "flannel" "kube-flannel" "pods" "app=flannel"
+    else
+      kube::wait "flannel" "kube-system" "pods" "app=flannel"
+    fi  
 
   elif [[ "$KUBE_NETWORK" == "calico" ]]; then
     log::info "[network]" "add calico"
@@ -3279,7 +3294,7 @@ function add::ops() {
   [[ "${master_num:-0}" == "0" ]] && master_num=1
   kube::apply "etcd-snapshot" """
 ---
-apiVersion: batch/v1beta1
+apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: etcd-snapshot
@@ -3676,7 +3691,7 @@ function upgrade::cluster() {
   do
     log::info "[upgrade]" "node: $host"
     local local_version=""
-    command::exec "${host}" "kubectl version --client --short | awk '{print \$3}'"
+    command::exec "${host}" "kubectl version --client --output=yaml | awk '/gitVersion:/ {print \$2}'"
     get::command_output "local_version" "$?" && local_version="${local_version#v}"
 
     if [[ "${KUBE_VERSION}" != "latest" ]]; then
